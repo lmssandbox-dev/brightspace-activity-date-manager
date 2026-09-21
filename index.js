@@ -6,6 +6,7 @@ require('dotenv').config();
 const axios = require('axios');
 const { createBrightspaceAuth } = require('./brightspace-auth');
 const { databaseConfig } = require('./database-config');
+const { deploymentGuard } = require('./deployment-guard');
 const lti = require('ltijs').Provider;
 
 // ===============================
@@ -21,6 +22,7 @@ const {
   BS_URL,
   BS_NAME,
   BS_CLIENT_ID,
+  BS_DEPLOYMENT_ID,
   BS_AUTH_ENDPOINT,
   BS_TOKEN_ENDPOINT,   // ex.: https://auth.brightspace.com/core/connect/token
   BS_KEYSET_URL,
@@ -166,7 +168,9 @@ async function registerBrightspace() {
 // ===============================
 // Handler do Launch LTI
 // ===============================
+const authorizeDeployment = deploymentGuard(BS_DEPLOYMENT_ID);
 lti.onConnect(async (token, req, res) => {
+  if (!authorizeDeployment(token, req, res)) return;
   try {
 
     const courseId = token.platformContext?.context?.id;
@@ -227,6 +231,9 @@ lti.app.get('/ping', (req, res) => {
 const start = async () => {
   try {
     await lti.deploy({ port });
+    if (!BS_DEPLOYMENT_ID?.trim()) {
+      console.log('Setup mode: launches are blocked until BS_DEPLOYMENT_ID is configured. Key endpoints remain available.');
+    }
     console.log(`🚀 Servidor LTI rodando na porta ${port}`);
     if (BS_CLIENT_ID && BS_CLIENT_ID.trim()) {
       await registerBrightspace();

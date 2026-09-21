@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test brightspace-auth.test.js database-config.test.js",
+    "test": "node --test brightspace-auth.test.js database-config.test.js deployment-guard.test.js",
     "check": "node --check index.js"
   },
   "dependencies": {
