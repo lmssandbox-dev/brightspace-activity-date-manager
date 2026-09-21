@@ -47,7 +47,13 @@ function createBrightspaceAuth({ clientId, scope, kid, privateKeyPem,
     } catch (error) {
       // Never propagate Axios request config: it contains the signed assertion.
       const status = error.response?.status;
-      throw new Error(`Brightspace token exchange failed${status ? ` (HTTP ${status})` : ''}`);
+      const knownErrors = new Set(['invalid_request', 'invalid_client', 'invalid_grant',
+        'unauthorized_client', 'unsupported_grant_type', 'invalid_scope', 'server_error',
+        'temporarily_unavailable']);
+      const code = error.response?.data?.error;
+      // Only allow known protocol codes, never arbitrary response text or assertions.
+      const detail = knownErrors.has(code) ? ` [${code}]` : '';
+      throw new Error(`Brightspace token exchange failed${status ? ` (HTTP ${status})` : ''}${detail}`);
     }
   }
 

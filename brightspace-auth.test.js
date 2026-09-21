@@ -6,6 +6,20 @@ const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const config = { clientId: 'test-client', scope: 'test:resource:read', kid: 'test-key',
   privateKeyPem: privateKey.export({ format: 'pem', type: 'pkcs8' }) };
 
+test('OAuth diagnostics show known error codes without leaking response secrets', async () => {
+  for (const code of ['invalid_client', 'invalid_scope', 'SECRET']) {
+    const auth = createBrightspaceAuth({ ...config, http: { async post() {
+      throw { response: { status: 400, data: { error: code, error_description: 'SECRET' } } };
+    } } });
+    await assert.rejects(auth.getAccessToken(), error => {
+      assert.ok(!error.message.includes('SECRET'));
+      assert.ok(error.message.includes('HTTP 400'));
+      if (code !== 'SECRET') assert.ok(error.message.includes(`[${code}]`));
+      return true;
+    });
+  }
+});
+
 test('signed assertion, public discovery, concurrent cache and renewal', async () => {
   let time = 1000000;
   const calls = [];
