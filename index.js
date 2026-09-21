@@ -48,7 +48,7 @@ if (!MONGODB_URL || !LTI_KEY) {
 }
 
 const missingPlatformVariables = Object.entries({
-  BS_URL, BS_CLIENT_ID, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL
+  BS_URL, BS_AUTH_ENDPOINT, BS_TOKEN_ENDPOINT, BS_KEYSET_URL
 }).filter(([, value]) => !value || !value.trim()).map(([name]) => name);
 
 if (missingPlatformVariables.length) {
@@ -228,7 +228,11 @@ const start = async () => {
   try {
     await lti.deploy({ port });
     console.log(`🚀 Servidor LTI rodando na porta ${port}`);
-    await registerBrightspace();
+    if (BS_CLIENT_ID && BS_CLIENT_ID.trim()) {
+      await registerBrightspace();
+    } else {
+      console.log('Setup mode: key endpoints are available. Set BS_CLIENT_ID after creating the Brightspace LTI registration, then restart.');
+    }
   } catch (err) {
     console.error('❌ Erro na inicialização:', err.message);
     process.exit(1);
