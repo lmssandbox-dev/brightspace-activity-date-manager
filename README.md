@@ -42,75 +42,71 @@ Initial LTI setup: leave BS_CLIENT_ID unset or empty and deploy. The server skip
 
 Set BS_DEPLOYMENT_ID in Render to the exact Deployment ID for this tool in Brightspace (not its Client ID). Restart after changes. The launch and diagnostic handlers check the validated ltijs token.deploymentId before any OAuth or course API request. Missing configuration returns HTTP 503; a missing or different launch Deployment ID returns HTTP 403. During initial setup, leave this variable empty: the server and public key endpoints remain available. Configure it after creating the deployment. Deploy the entire src/ directory along with index.js. The diagnostic requires a validated LTI session; it is not a public or whitelisted route.
 
-## Spike 01B: read-only discovery
+## Spike 01B discovery contract (schemaVersion 2)
 
-The old 01A course/TOC API test display is removed. The launch now opens a minimal diagnostic form; no course API requests happen until you submit an OrgUnitId. LTI registration, ltijs/MongoDB, the deployment guard, and the existing server-to-server OAuth token exchange are unchanged. No date writes or bulk operations are implemented.
+The LTI launch displays a developer diagnostic form. Enter an explicit OrgUnitId; choose **Include undated activities**, optional redacted raw API responses, or JSON output. No course API reads happen until submission. Access is controlled by the LMS LTI installation, validated ltijs session and configured deployment, with no app user allowlist.
 
-### Setup and use
+`GET /diagnostics/activities?orgUnitId=12345` defaults to dated activities. Add `includeUndated=1`, `raw=1`, or `format=json` as needed. A valid ltijs session is required. The form carries it automatically; responses are not cached.
 
-1. Configure the tool's LTI installation in Brightspace so only the intended users or roles (for example, administrators) can launch it. Every user with a valid launch from the configured deployment can access discovery, including optional raw responses, for any OrgUnitId accessible to the service account. No per-user environment variable is required.
-2. Retain your API versions supported by the tenant. Source Course current/all re-offering routes require LP 1.53+; discussion topic due dates require LE 1.90+. Use a supported LE version with these fields for complete date discovery. TOC date-restriction bypass requires LE 1.67+.
-3. Register/request these read scopes, retaining any other scopes your deployment needs:
-   `dropbox:folders:read quizzing:quizzes:read discussions:forums:readonly discussions:topics:readonly content:toc:read content:modules:readonly content:topics:readonly orgunits:sourcecourses:read`
-4. Give the service user the corresponding tool permissions and access to the source/target courses, including hidden activities. Launch through Brightspace, enter the actual numeric OrgUnitId, and choose **Read activities**. Raw responses and JSON output are optional checkboxes.
+The underlying `discover(orgUnitId, { includeUndated: true, includeRaw: false })` service returns all supported activities by default. Its response contains `schemaVersion`, `orgUnitId`, `complete`, `sources`, `activities`, `contentRelationships`, `contentStructure`, `counts`, `warnings`, and optional `raw`. Source Course and Course Offering IDs use the same readers. Source Course lifecycle reads remain separate.
 
-The protected endpoint is `GET /diagnostics/activities?orgUnitId=12345`. Add `format=json` for JSON and `raw=1` to include original API response bodies. A valid ltijs session (`ltik`) is required; the launch form carries it automatically. Do not share session URLs. Responses use `Cache-Control: no-store`. Raw output can contain quiz passwords and other sensitive tool settings; it is accessible to authorized tool launchers and is omitted by default.
+See [the normalized contract](docs/discovery-contract.md), [future update considerations](docs/future-writes.md), and [acceptance matrix and live verification](docs/acceptance.md).
 
-### Discovery and Activity contract
+### API scopes and versions
 
-`src/brightspace/client.js` exports `createBrightspaceClient({ get, leRoot, lpRoot })` for shared read-only transport and pagination. The activity clients use it to read their respective APIs. `src/services/activityDiscovery.js` exports `createActivityDiscovery({ assignments, quizzes, discussions, content })`, which takes those clients. `discover(orgUnitId, { includeRaw: false })` returns `{ orgUnitId, activities, contentLinks, warnings }`, with `raw` added only when requested. Reads cover Assignments (Dropbox folders), every quiz page, all discussion forums and their topics, and recursive Content TOC modules/topics. Content details are read for every TOC entry because the TOC alone omits due dates. TOC retrieval includes `ignoreDateRestrictions=true` so scheduled items are not omitted merely because their dates hide them.
+Configure only the read scopes needed by these adapters. The service user's roles and org-unit permissions must also allow the reads, including hidden activities.
 
-Each Activity has `type`, string `id`, nullable string `parentId`, `name`, string `orgUnitId`, nullable `startDate`, `dueDate`, `endDate`, and `metadata`. Types are `assignment`, `quiz`, `discussionForum`, `discussionTopic`, `contentModule`, and `contentTopic`. Identity is `(orgUnitId, type, id)`; IDs from different tools can collide. Parents are assignment/quiz category IDs, discussion forum IDs, or Content module IDs as applicable. Only activities with at least one non-null primary date appear in `activities`. Undated parents are still traversed.
+| Adapter | OAuth scopes |
+|---|---|
+| Assignments | `dropbox:folders:read` |
+| Quizzes | `quizzing:quizzes:read` |
+| Discussion forums/topics | `discussions:forums:readonly discussions:topics:readonly` |
+| Content TOC and details | `content:toc:read content:modules:readonly content:topics:readonly` |
+| Source Course helpers | `orgunits:sourcecourses:read` |
 
-Dates retain their original strings, timezone and precision. Missing dates normalize to null. Metadata preserves returned date-related fields, exact availability types (including zero/string/null), calendar/visibility flags, category/forum IDs, and activity/tool identifiers. Assignment availability metadata remains nested and its type fields are also exposed at the metadata root. Omitted metadata fields remain omitted. Legacy discussion posting/unlock dates and pacing dates are retained as metadata, not substituted for primary activity dates. Normalized metadata excludes unrelated fields such as quiz passwords.
+LP and LE versions come from `D2L_LP_VERSION` and `D2L_LE_VERSION`. Discovery requires a tenant-supported **LE 1.90 or later**, validated centrally by `src/brightspace/apiVersions.js` before any reads; older versions are rejected so Discussion Topic due dates are not silently lost. Source Course helpers require LP 1.53+. Availability fields absent from responses remain explicitly `missing`. No write scopes are requested.
 
-Content native references (ActivityType 3/4/5/6) are excluded as independent activities even when the native item cannot be matched. `contentLinks` retains every such occurrence, including undated/repeated/broken links, its Content dates and metadata, and the exact `ActivityId`, `ActivityType`, `ToolId`, and `ToolItemId` values. Matching uses ActivityId or ActivityType plus ToolItemId; numeric IDs alone and titles are never enough. Unknown activity types can also be matched by ActivityId. Unresolved or ambiguous references have `nativeActivity: null` and a warning. Native dates remain authoritative; Content dates never overwrite them. Other Content items remain independently eligible.
+### Code organization
 
-Reads are sequential to limit request bursts. Pagination follows same-tenant HTTPS API URLs and rejects cycles and malformed responses. Any failed API read fails discovery instead of presenting a partial list as complete. A diagnostic failure returns HTTP 502; invalid IDs return 400; unauthorized access returns 403. Results are limited to what the service user's permissions expose; an empty API list cannot prove that no hidden activities exist. Source Course helpers are independent so lack of Source Courses support does not block ordinary discovery.
+```text
+index.js                          # LTI startup and composition
+src/
+  config/database.js              # Dedicated MongoDB validation
+  brightspace/
+    auth.js                       # Private Key JWT OAuth and token cache
+    client.js                     # GET, pagination, URL checks, redacted debug data
+    errors.js                     # Sanitized upstream errors
+    deploymentGuard.js            # Validated LTI deployment check
+    id.js                         # Brightspace numeric IDs
+    availability.js               # AVAILABILITY_T mapping
+    activities/
+      assignments.js              # Assignment reads and mapping
+      quizzes.js                  # Quiz reads and mapping
+      discussions.js              # Forum/topic reads and mapping
+      content.js                  # TOC/detail reads and partial-read handling
+      normalizers.js              # All Brightspace-native field mappings
+      readResult.js               # Per-record normalization warnings
+    sourceCourses.js              # Independent source/re-offering reads
+  services/
+    activityNormalizer.js         # Domain objects and strict UTC instant parsing
+    contentRelationshipResolver.js # Canonical matching and hierarchy
+    activityDiscovery.js          # Orchestration, filtering, completeness and warnings
+  routes/discoveryDiagnostics.js  # Temporary diagnostic HTML/JSON handlers
+scripts/
+  verify-discovery.js             # Read-only live acceptance command
+  discovery-acceptance.js         # Domain acceptance matrix checks
+```
+
+Tests and synthetic JSON fixtures live in `test/`. Run `npm test` and `npm run check` with Node 22. Deploy `src/`, `index.js` and `package.json`; deploy `scripts/` too if you want to run the acceptance command there. Authentication and LTI architecture are unchanged. No activity writes, bulk operations, date shifting or final UI are implemented.
 
 ### Source Course helpers
 
-All three helpers return the original LP response and accept an optional sub-organization ID as the second argument:
+`createSourceCoursesClient(brightspaceClient)` provides:
 
 - `getCurrentReofferedCourse(sourceOrgUnitId, subOrganizationOrgUnitId)`
 - `getAllReofferedCourses(sourceOrgUnitId, subOrganizationOrgUnitId)`
 - `getSourceCourse(courseOfferingId, subOrganizationOrgUnitId)`
 
-They use `/sourceCourses/{id}/currentReofferedCourse`, `/sourceCourses/{id}/reofferedCourses`, and `/sourceCourses/courseOfferings/{id}` respectively. The first two take a **source** course ID; the third takes a **course offering** ID. They do not create or re-offer courses. HTTP errors, including 403/404/429, remain failures rather than empty results.
+The optional second argument filters by sub-organization. These helpers return their LP responses and are deliberately independent of activity discovery; lack of Source Course functionality does not block discovery for another valid OrgUnitId.
 
-### Fixtures and live verification
-
-`test/fixtures/*.json` contains synthetic API-shaped examples, not captured tenant data. Tests cover each normalizer, nested/null/omitted dates, due-only Content, availability types, native-link deduplication, multiple quiz pages, empty courses, unsafe pagination, failed reads, Source Course paths, and protected HTML/JSON diagnostics. Run `npm test` and `npm run check` using Node 22.
-
-A live acceptance check still requires the configured Brightspace tenant: compare a course containing dated and undated native activities, nested Content, repeated native links, and future/expired items against the diagnostic; then exercise the three Source Course helpers with known relationships. API visibility and fields depend on tenant version and service-user permissions. Per-user special-access dates and unrelated tools are outside this spike.
-
-API contracts: [Assignments](https://docs.valence.desire2learn.com/res/dropbox.html), [Quizzes](https://docs.valence.desire2learn.com/res/quiz.html), [Discussions](https://docs.valence.desire2learn.com/res/discuss.html), [Content and TOC](https://docs.valence.desire2learn.com/res/content.html), [Source Courses](https://docs.valence.desire2learn.com/res/course.html), [pagination](https://docs.valence.desire2learn.com/basic/apicall.html).
-
-### Code organization
-
-```text
-index.js                          # LTI setup and dependency wiring
-src/
-  brightspace/
-    auth.js                       # Existing Private Key JWT OAuth and token cache
-    deploymentGuard.js            # Validated Brightspace LTI deployment check
-    client.js                     # Authenticated GET, URL guards and pagination
-    id.js                         # Shared Brightspace ID validation
-    activities/
-      assignments.js              # Assignment API reads
-      quizzes.js                  # Quiz API reads
-      discussions.js              # Forum and topic API reads
-      content.js                  # TOC and Content detail reads
-    sourceCourses.js              # Source Course relationship reads
-  config/
-    database.js                   # Dedicated MongoDB database configuration
-  routes/
-    discoveryDiagnostics.js       # Diagnostic form, handlers and user access
-  services/
-    activityDiscovery.js          # Read orchestration and diagnostic result
-    activityNormalizer.js         # Pure Activity mapping and Content reconciliation
-```
-
-`src/routes/discoveryDiagnostics.js` is the HTTP presentation/access layer. Test files in `test/` and fixtures in `test/fixtures/` exercise the modules through their new paths. Deploy the entire `src/` directory along with `index.js` and `package.json`.
-
-Source Course helpers are created separately with `createSourceCoursesClient(brightspaceClient)` from `src/brightspace/sourceCourses.js`; activity discovery does not depend on them. `createBrightspaceGet({ http, oauth, baseUrl })` in the shared client module supplies the existing authenticated GET transport. Tests can inject a mock GET without loading axios, ltijs or tenant secrets.
+API references: [Assignments](https://docs.valence.desire2learn.com/res/dropbox.html), [Quizzes](https://docs.valence.desire2learn.com/res/quiz.html), [Discussions](https://docs.valence.desire2learn.com/res/discuss.html), [Content](https://docs.valence.desire2learn.com/res/content.html), [Source Courses](https://docs.valence.desire2learn.com/res/course.html), [pagination](https://docs.valence.desire2learn.com/basic/apicall.html).

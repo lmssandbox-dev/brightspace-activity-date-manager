@@ -7,10 +7,11 @@ const escapeHtml = value => String(value).replace(/[&<>"']/g,
 
 function diagnosticForm(ltik, orgUnitId = '') {
   return `<h1>Spike 01B — Activity discovery</h1>
-    <p>Read-only discovery of activities with start, due or end dates.</p>
+    <p>Read-only discovery of activities and their Content placements.</p>
     <form method="get" action="/diagnostics/activities">
       <input type="hidden" name="ltik" value="${escapeHtml(ltik ?? '')}">
       <label>OrgUnitId <input name="orgUnitId" pattern="[1-9][0-9]*" required value="${escapeHtml(orgUnitId)}"></label>
+      <label><input type="checkbox" name="includeUndated" value="1"> Include undated activities</label>
       <label><input type="checkbox" name="raw" value="1"> Include raw API responses</label>
       <label><input type="checkbox" name="format" value="json"> JSON response</label>
       <button type="submit">Read activities</button>
@@ -38,13 +39,16 @@ function createDiagnostics({ client, deploymentId }) {
       try { orgUnitId = id(req.query.orgUnitId); }
       catch { return res.status(400).json({ error: 'orgUnitId must be a positive decimal ID.' }); }
       try {
-        const result = await client.discover(orgUnitId, { includeRaw: req.query.raw === '1' });
+        const result = await client.discover(orgUnitId, { includeRaw: req.query.raw === '1', includeUndated: req.query.includeUndated === '1' });
         if (req.query.format === 'json') return res.json(result);
         res.send(`${diagnosticForm(res.locals.ltik, orgUnitId)}
+          <h2>Org Unit</h2><p>${escapeHtml(result.orgUnitId)} — ${result.complete ? 'Complete discovery' : 'Partial discovery'}</p>
+          <pre>${escapeHtml(JSON.stringify(result.counts, null, 2))}</pre>
           <h2>Normalized activities (${result.activities.length})</h2>
           <pre>${escapeHtml(JSON.stringify(result.activities, null, 2))}</pre>
-          <h2>Content relationships (${result.contentLinks.length})</h2>
-          <pre>${escapeHtml(JSON.stringify(result.contentLinks, null, 2))}</pre>
+          <h2>Content relationships (${result.contentRelationships.length})</h2>
+          <pre>${escapeHtml(JSON.stringify(result.contentRelationships, null, 2))}</pre>
+          <h2>Content structure</h2><pre>${escapeHtml(JSON.stringify(result.contentStructure, null, 2))}</pre>
           <h2>Warnings</h2><pre>${escapeHtml(JSON.stringify(result.warnings, null, 2))}</pre>
           ${result.raw ? `<h2>Raw API responses</h2><pre>${escapeHtml(JSON.stringify(result.raw, null, 2))}</pre>` : ''}`);
       } catch {
